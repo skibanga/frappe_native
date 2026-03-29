@@ -4,6 +4,7 @@ import re
 
 import frappe
 from frappe import _
+from frappe.model.db_query import DatabaseQuery
 
 
 def _normalize_app_name(value: str) -> str:
@@ -15,6 +16,24 @@ def _normalize_app_name(value: str) -> str:
 
 def _titleize(value: str) -> str:
 	return " ".join(part.capitalize() for part in re.split(r"[_\-\s]+", value) if part)
+
+
+def _safe_count(doctype: str) -> dict[str, int | str | None]:
+	if not frappe.has_permission(doctype=doctype, ptype="read"):
+		return {"status": "no_access", "value": None}
+
+	try:
+		rows = DatabaseQuery(doctype).execute(
+			fields=["count(name) as count"],
+			limit_page_length=1,
+			as_list=False,
+		)
+		count_value = 0
+		if rows and isinstance(rows[0], dict):
+			count_value = int(rows[0].get("count") or 0)
+		return {"status": "ok", "value": count_value}
+	except Exception:
+		return {"status": "error", "value": None}
 
 
 @frappe.whitelist(allow_guest=True)
@@ -57,4 +76,24 @@ def get_client_id(app: str | None = None):
 		"token_endpoint": f"{base_url}/api/method/frappe.integrations.oauth2.get_token",
 		"revoke_endpoint": f"{base_url}/api/method/frappe.integrations.oauth2.revoke_token",
 		"me_endpoint": f"{base_url}/api/method/frappe.auth.get_logged_user",
+	}
+
+
+@frappe.whitelist()
+def get_session_snapshot():
+	if frappe.session.user == "Guest":
+		frappe.throw(_("Authentication required"), frappe.PermissionError)
+
+	user = frappe.session.user
+	user_doc = frappe.get_doc("User", user)
+	roles = [role for role in frappe.get_roles(user) if role not in {"All", "Guest"}]
+
+	return {
+		"user": user,
+		"full_name": user_doc.full_name,
+		"roles": roles,
+		"counts": {
+			"ToDo": _safe_count("ToDo"),
+			"User": _safe_count("User"),
+		},
 	}

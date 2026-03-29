@@ -1868,6 +1868,8 @@ def _auth_index_template(display_name: str) -> str:
 			<div class="badge badge-success">Authenticated</div>
 			<h2>Home</h2>
 			<p class="muted" id="user-line">Loading user...</p>
+			<p class="meta" id="roles-line"></p>
+			<p class="meta" id="counts-line"></p>
 			<p class="meta" id="site-line"></p>
 			<div class="actions">
 				<button class="btn btn-secondary" id="btn-logout" type="button">Logout</button>
@@ -2006,6 +2008,8 @@ def _auth_app_js_template() -> str:
 		home: document.getElementById("screen-home"),
 		status: document.getElementById("status-line"),
 		userLine: document.getElementById("user-line"),
+		rolesLine: document.getElementById("roles-line"),
+		countsLine: document.getElementById("counts-line"),
 		siteLine: document.getElementById("site-line"),
 		loginBtn: document.getElementById("btn-login"),
 		logoutBtn: document.getElementById("btn-logout"),
@@ -2022,9 +2026,9 @@ def _auth_app_js_template() -> str:
 
 			await handleOAuthCallback();
 
-			const me = await getCurrentUser();
-			if (me) {
-				renderHome(me);
+			const snapshot = await getSessionSnapshot();
+			if (snapshot) {
+				renderHome(snapshot);
 			} else {
 				renderLanding();
 			}
@@ -2061,15 +2065,43 @@ def _auth_app_js_template() -> str:
 		if (els.home) els.home.classList.add("hidden");
 	}
 
-	function renderHome(user) {
+	function renderHome(snapshot) {
 		if (els.home) els.home.classList.remove("hidden");
 		if (els.landing) els.landing.classList.add("hidden");
+		const user = snapshot.full_name
+			? snapshot.full_name + " (" + snapshot.user + ")"
+			: snapshot.user;
 		if (els.userLine) {
 			els.userLine.textContent = "Logged in as " + user;
+		}
+		if (els.rolesLine) {
+			const roles = Array.isArray(snapshot.roles) && snapshot.roles.length
+				? snapshot.roles.join(", ")
+				: "No roles";
+			els.rolesLine.textContent = "Roles: " + roles;
+		}
+		if (els.countsLine) {
+			const counts = snapshot.counts || {};
+			const todoCount = formatCount("ToDo", counts.ToDo);
+			const userCount = formatCount("User", counts.User);
+			els.countsLine.textContent = "Counts: " + todoCount + " | " + userCount;
 		}
 		if (els.siteLine) {
 			els.siteLine.textContent = "Site: " + config.site_url;
 		}
+	}
+
+	function formatCount(label, entry) {
+		if (!entry || typeof entry !== "object") {
+			return label + " n/a";
+		}
+		if (entry.status === "ok") {
+			return label + " " + String(entry.value ?? 0);
+		}
+		if (entry.status === "no_access") {
+			return label + " no-access";
+		}
+		return label + " error";
 	}
 
 	function unwrap(payload) {
@@ -2261,14 +2293,16 @@ def _auth_app_js_template() -> str:
 		return getTokens();
 	}
 
-	async function getCurrentUser() {
+	async function getSessionSnapshot() {
 		const tokens = await refreshTokenIfNeeded(getTokens());
 		if (!tokens || !tokens.access_token) {
 			clearTokens();
 			return null;
 		}
 
-		const response = await fetch(config.site_url + "/api/method/frappe.auth.get_logged_user", {
+		const response = await fetch(
+			config.site_url + "/api/method/frappe_native.api.mobile_auth.get_session_snapshot",
+			{
 			method: "GET",
 			headers: {
 				Authorization: "Bearer " + tokens.access_token,
@@ -2285,11 +2319,11 @@ def _auth_app_js_template() -> str:
 		}
 
 		const payload = await response.json();
-		const user = unwrap(payload);
-		if (!user || user === "Guest") {
+		const snapshot = unwrap(payload);
+		if (!snapshot || !snapshot.user || snapshot.user === "Guest") {
 			return null;
 		}
-		return user;
+		return snapshot;
 	}
 
 	async function revokeToken(token, tokenTypeHint) {
@@ -2335,7 +2369,7 @@ bench native auth init --app {app_name} --site {site}
 - Landing screen with **Login** button
 - OAuth authorization code login with PKCE (plain challenge)
 - Access token + refresh token storage
-- Session user fetch (`frappe.auth.get_logged_user`)
+- Session snapshot fetch (user, roles, doctype counts)
 - Logout with token revocation
 
 ## Files You Can Edit
